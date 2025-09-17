@@ -1,5 +1,7 @@
+from datetime import datetime
 import json
 import logging
+import os
 from posixpath import basename
 import essentia
 from essentia import Pool
@@ -17,12 +19,14 @@ logging.basicConfig(
 
 @dataclass
 class RekordboxTrack:
+    id: str
     title: str
     artist: str
     location: str
     album: str | None = None
     genre: str | None = None
     subgenre: str | None = None
+    
 
 
 def parse_rekordbox_location(location: str) -> str:
@@ -37,6 +41,7 @@ def parse_rekordbox_xml(file_path: str) -> list[RekordboxTrack]:
     rb_tracks = []
 
     for track in tracks:
+        id = track.getAttribute('ID')
         title = track.getAttribute('Name')
         artist = track.getAttribute('Artist')
         location = track.getAttribute('Location')
@@ -45,10 +50,42 @@ def parse_rekordbox_xml(file_path: str) -> list[RekordboxTrack]:
             continue
         location = parse_rekordbox_location(location)
         genre = genre if genre else None
-        rb_tracks.append(RekordboxTrack(location=location, title=title, artist=artist, genre=genre))
+        rb_tracks.append(RekordboxTrack(id=id, title=title, artist=artist, genre=genre, location=location))
 
     return rb_tracks
 
+def patch_rekordbox_xml(file_path: str, rb_tracks: list[RekordboxTrack], patchable_attrs=["genre"]):
+    dom = parse(file_path)
+    tracks = dom.getElementsByTagName('TRACK')
+
+    # Make timestamped backup
+    base, ext = os.path.splitext(file_path)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    backup_path = f"{base}_{timestamp}{ext}"
+    with open(backup_path, 'w', encoding='utf-8') as f:
+        dom.writexml(f, encoding='utf-8')
+
+    for track in rb_tracks:
+        # find track node with given id
+        node = next(t for t in tracks if t.getAttribute("ID") == track.id) 
+        if node is None:
+            logging.error(f"Node not found for {track.id}")
+            continue
+
+        for attr in patchable_attrs:
+            if node.hasAttribute(attr) and node.getAttribute(attr) != "":
+                logging.info("attribute {attr} is already set, skipping")
+                continue
+            track_dict = asdict(track)
+            if not hasattr(track_dict, attr):
+                continue
+            value = track_dict[attr]
+            logging.info("Setting {attr} to {value}")
+            node.setAttribute(attr, value)
+
+    # Save the modified XML
+    with open(file_path, 'w', encoding='utf-8') as f:
+        dom.writexml(f, encoding='utf-8')
 
 # Suppress Essentia warnings about networks
 essentia.log.warningActive = False
@@ -122,10 +159,13 @@ def process_tracks(rb_tracks: list[RekordboxTrack], batch_size: int = 8):
                 f.write(json.dumps(obj) + "\n")
                 logging.info(f"Classified {track.title} as {genre} / {subgenre}")
 
+        
+
 
 if __name__ == "__main__":
     rb_tracks = parse_rekordbox_xml("rekordbox.xml")
     print(f"Parsed {len(rb_tracks)} tracks from Rekordbox XML")
     process_tracks(rb_tracks, batch_size=2)
+    patch_rekordbox_xml("rekordbox.xml", rb_tracks) 
 
 
