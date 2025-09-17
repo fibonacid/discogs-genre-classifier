@@ -165,6 +165,10 @@ def process_tracks(rb_tracks: list[RekordboxTrack], batch_size: int = 8):
 if __name__ == "__main__":
     rb_tracks = parse_rekordbox_xml("rekordbox.xml")
     print(f"Parsed {len(rb_tracks)} tracks from Rekordbox XML")
+
+    rb_tracks = [t for t in rb_tracks if not t.genre]
+    print(f"{len(rb_tracks)} tracks to classify (without genre)")
+
     process_tracks(rb_tracks, batch_size=2)
     patch_rekordbox_xml("rekordbox.xml", rb_tracks) 
 
