@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Callable, Union
 import json
 import logging
 import os
@@ -13,13 +14,13 @@ from urllib.parse import unquote
 from concurrent.futures import ThreadPoolExecutor
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s [%(levelname)s] %(message)s',
 )
 
 @dataclass
 class RekordboxTrack:
-    id: str
+    # id: str
     title: str
     artist: str
     location: str
@@ -41,7 +42,7 @@ def parse_rekordbox_xml(file_path: str) -> list[RekordboxTrack]:
     rb_tracks = []
 
     for track in tracks:
-        id = track.getAttribute('ID')
+        # id = track.getAttribute('ID')
         title = track.getAttribute('Name')
         artist = track.getAttribute('Artist')
         location = track.getAttribute('Location')
@@ -50,11 +51,14 @@ def parse_rekordbox_xml(file_path: str) -> list[RekordboxTrack]:
             continue
         location = parse_rekordbox_location(location)
         genre = genre if genre else None
-        rb_tracks.append(RekordboxTrack(id=id, title=title, artist=artist, genre=genre, location=location))
+        rb_tracks.append(RekordboxTrack(title=title, artist=artist, genre=genre, location=location))
 
     return rb_tracks
 
-def patch_rekordbox_xml(file_path: str, rb_tracks: list[RekordboxTrack], patchable_attrs=["genre"]):
+
+PatchableAttr = dict[str, Union[str, Callable[[RekordboxTrack], str | None]]]
+
+def patch_rekordbox_xml(file_path: str, rb_tracks: list[RekordboxTrack], patchable_attrs: dict[str, PatchableAttr]):
     dom = parse(file_path)
     tracks = dom.getElementsByTagName('TRACK')
 
@@ -66,22 +70,36 @@ def patch_rekordbox_xml(file_path: str, rb_tracks: list[RekordboxTrack], patchab
         dom.writexml(f, encoding='utf-8')
 
     for track in rb_tracks:
+        logging.info(f"Patching {track.title}")
         # find track node with given id
-        node = next(t for t in tracks if t.getAttribute("ID") == track.id) 
-        if node is None:
-            logging.error(f"Node not found for {track.id}")
+        try:
+            node = next(t for t in tracks if t.getAttribute("Name") == track.title) 
+        except StopIteration:
+            logging.error(f"Node not found for {track.title}")
             continue
 
-        for attr in patchable_attrs:
-            if node.hasAttribute(attr) and node.getAttribute(attr) != "":
+        for xml_attr, track_attr in patchable_attrs.items():
+            logging.info(f"Processing attribute {track_attr}")
+            if node.hasAttribute(xml_attr) and node.getAttribute(xml_attr) != "":
                 logging.info("attribute {attr} is already set, skipping")
                 continue
+
             track_dict = asdict(track)
-            if not hasattr(track_dict, attr):
+            logging.info(f"Track data: {track_dict}")
+            # if track_attr not in track_dict or not track_dict[track_attr]:
+            #     logging.error(f"Track does not have attribute {track_attr}, skipping")
+            #     continue
+
+            if callable(track_attr):
+                value = track_attr(track)
+            else:
+                value = track_dict[track_attr]
+            if not value:
+                logging.error(f"Value for attribute {track_attr} is empty, skipping")
                 continue
-            value = track_dict[attr]
-            logging.info("Setting {attr} to {value}")
-            node.setAttribute(attr, value)
+
+            logging.info(f"Setting {xml_attr} to {value}")
+            node.setAttribute(xml_attr, value)
 
     # Save the modified XML
     with open(file_path, 'w', encoding='utf-8') as f:
@@ -159,17 +177,23 @@ def process_tracks(rb_tracks: list[RekordboxTrack], batch_size: int = 8):
                 f.write(json.dumps(obj) + "\n")
                 logging.info(f"Classified {track.title} as {genre} / {subgenre}")
 
-        
-
 
 if __name__ == "__main__":
     rb_tracks = parse_rekordbox_xml("rekordbox.xml")
-    print(f"Parsed {len(rb_tracks)} tracks from Rekordbox XML")
+    # print(f"Parsed {len(rb_tracks)} tracks from Rekordbox XML")
+    #
+    # rb_tracks = [t for t in rb_tracks if not t.genre]
+    # print(f"{len(rb_tracks)} tracks to classify (without genre)")
+    #
+    # process_tracks(rb_tracks, batch_size=2)
+    # patch_rekordbox_xml("rekordbox.xml", rb_tracks) 
 
-    rb_tracks = [t for t in rb_tracks if not t.genre]
-    print(f"{len(rb_tracks)} tracks to classify (without genre)")
+    with open("classified_tracks.jsonl", "r", encoding="utf-8") as f:
+        classified_tracks = [RekordboxTrack(**json.loads(line)) for line in f]
+        logging.info(f"Loaded {len(classified_tracks)} classified tracks from JSONL")
 
-    process_tracks(rb_tracks, batch_size=2)
-    patch_rekordbox_xml("rekordbox.xml", rb_tracks) 
+    patch_rekordbox_xml("rekordbox.xml", classified_tracks, patchable_attrs={
+        "Genre": lambda t: f"{t.genre} / {t.subgenre}" if t.genre and t.subgenre else t.genre,
+    })
 
 
